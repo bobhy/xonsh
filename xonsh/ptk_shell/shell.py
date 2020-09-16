@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
 """The prompt_toolkit based xonsh shell."""
+# ptk enhancements
+# run multicmd () on event loop, use .prompt_async()
+# run compiled commands on different event loop (find all calls)
+# recompute argument dict for prompt only when (any?) environment variable changes.
 import os
 import sys
 import builtins
@@ -76,6 +80,9 @@ def tokenize_ansi(tokens):
     return ansi_tokens
 
 
+SINGLETON_SHELL = None
+
+
 class PromptToolkitShell(BaseShell):
     """The xonsh shell for prompt_toolkit v2 and later."""
 
@@ -91,6 +98,7 @@ class PromptToolkitShell(BaseShell):
         if ON_WINDOWS:
             winutils.enable_virtual_terminal_processing()
         self._first_prompt = True
+        self.prompt_args = None  # initialization too complex, must defer till shell is fully initialized.
         self.history = ThreadedHistory(PromptToolkitHistory())
         self.prompter = PromptSession(history=self.history)
         self.pt_completer = PromptToolkitCompleter(self.completer, self.ctx, self)
@@ -108,17 +116,22 @@ class PromptToolkitShell(BaseShell):
             bindings=self.key_bindings,
         )
 
-    def singleline(
-        self, auto_suggest=None, enable_history_search=True, multiline=True, **kwargs
-    ):
-        """Reads a single line of input from the shell. The store_in_history
-        kwarg flags whether the input should be stored in PTK's in-memory
-        history.
-        """
-        events.on_pre_prompt.fire()
+    @staticmethod
+    def _on_envvar_new(name, value, **kw):
+        instance = SINGLETON_SHELL
+        instance._update_prompt_args()
+
+    @staticmethod
+    def _on_envvar_change(name, oldvalue, newvalue, **kw):
+        instance = SINGLETON_SHELL
+        instance._update_prompt_args()
+
+    def _update_prompt_args(self, enable_history_search=True):
+        """Rethink all arguments to ptk prompt.
+        Doesn't need to happen before each prompt, but only when certain environment variables change."""
+
         env = builtins.__xonsh__.env
         mouse_support = env.get("MOUSE_SUPPORT")
-        auto_suggest = auto_suggest if env.get("AUTO_SUGGEST") else None
         refresh_interval = env.get("PROMPT_REFRESH_INTERVAL")
         refresh_interval = refresh_interval if refresh_interval > 0 else None
         complete_in_thread = env.get("COMPLETION_IN_THREAD")
@@ -159,14 +172,14 @@ class PromptToolkitShell(BaseShell):
         ):
             self.prompter.default_buffer._history_matches = self._history_matches_orig
 
-        prompt_args = {
+        self.prompt_args = {
             "mouse_support": mouse_support,
-            "auto_suggest": auto_suggest,
+            # "auto_suggest": auto_suggest,
             "message": get_prompt_tokens,
             "rprompt": get_rprompt_tokens,
             "bottom_toolbar": get_bottom_toolbar_tokens,
             "completer": completer,
-            "multiline": multiline,
+            # "multiline": multiline,
             "editing_mode": editing_mode,
             "prompt_continuation": self.continuation_tokens,
             "enable_history_search": enable_history_search,
@@ -180,22 +193,45 @@ class PromptToolkitShell(BaseShell):
         }
         if builtins.__xonsh__.env.get("COLOR_INPUT"):
             if HAS_PYGMENTS:
-                prompt_args["lexer"] = PygmentsLexer(pyghooks.XonshLexer)
+                self.prompt_args["lexer"] = PygmentsLexer(pyghooks.XonshLexer)
                 style = style_from_pygments_cls(pyghooks.xonsh_style_proxy(self.styler))
             else:
                 style = style_from_pygments_dict(DEFAULT_STYLE_DICT)
 
-            prompt_args["style"] = style
+            self.prompt_args["style"] = style
 
             style_overrides_env = env.get("PTK_STYLE_OVERRIDES")
             if style_overrides_env:
                 try:
                     style_overrides = Style.from_dict(style_overrides_env)
-                    prompt_args["style"] = merge_styles([style, style_overrides])
+                    self.prompt_args["style"] = merge_styles([style, style_overrides])
                 except (AttributeError, TypeError, ValueError):
                     print_exception()
 
-        line = self.prompter.prompt(**prompt_args)
+    def singleline(self, auto_suggest=None, multiline=True, **kwargs):
+        """Reads a single line of input from the shell. The store_in_history
+        kwarg flags whether the input should be stored in PTK's in-memory
+        history.
+        """
+        events.on_pre_prompt.fire()
+
+        # defer initialization of prompt_args till we need it (first prompt).
+        # too many envvar events happening during initialization.
+        if self.prompt_args is None:
+            self._update_prompt_args()
+            global SINGLETON_SHELL
+            SINGLETON_SHELL = self
+            events.on_envvar_new(self._on_envvar_new)
+            events.on_envvar_change(self._on_envvar_change)
+
+        self.prompt_args.update(
+            dict(
+                auto_suggest=auto_suggest,
+                multiline=multiline,
+            )
+        )
+
+        line = self.prompter.prompt(**self.prompt_args)
         events.on_post_prompt.fire()
         return line
 
