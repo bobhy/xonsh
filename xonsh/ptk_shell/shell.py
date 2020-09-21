@@ -80,9 +80,6 @@ def tokenize_ansi(tokens):
     return ansi_tokens
 
 
-SINGLETON_SHELL = None
-
-
 class PromptToolkitShell(BaseShell):
     """The xonsh shell for prompt_toolkit v2 and later."""
 
@@ -98,7 +95,9 @@ class PromptToolkitShell(BaseShell):
         if ON_WINDOWS:
             winutils.enable_virtual_terminal_processing()
         self._first_prompt = True
-        self.prompt_args = None  # initialization too complex, must defer till shell is fully initialized.
+        self.prompt_args = (
+            None  # initialization too complex, defer till shell is fully initialized.
+        )
         self.history = ThreadedHistory(PromptToolkitHistory())
         self.prompter = PromptSession(history=self.history)
         self.pt_completer = PromptToolkitCompleter(self.completer, self.ctx, self)
@@ -119,19 +118,16 @@ class PromptToolkitShell(BaseShell):
             [self.key_bindings, load_emacs_shift_selection_bindings()]
         )
 
-    @staticmethod
-    def _on_envvar_new(name, value, **kw):
-        instance = SINGLETON_SHELL
-        instance._update_prompt_args()
+    def _update_prompt_args(self, name, value, enable_history_search=True):
+        """Rethink all arguments to ptk prompt.  Since these depend on environment variables
+        (with a few exceptions), only do it when environment variables change.
+        TODO optimize even further, only update specific args based on the variable that actually changed.
 
-    @staticmethod
-    def _on_envvar_change(name, oldvalue, newvalue, **kw):
-        instance = SINGLETON_SHELL
-        instance._update_prompt_args()
-
-    def _update_prompt_args(self, enable_history_search=True):
-        """Rethink all arguments to ptk prompt.
-        Doesn't need to happen before each prompt, but only when certain environment variables change."""
+        Args:
+            name (str): Name of the environment variable which actually changed
+            value (any): New value of variable
+            enable_history_search (bool, optional): Convenient initialization. Defaults to True.
+        """
 
         env = builtins.__xonsh__.env
         mouse_support = env.get("MOUSE_SUPPORT")
@@ -218,21 +214,20 @@ class PromptToolkitShell(BaseShell):
         """
         events.on_pre_prompt.fire()
 
-        # defer initialization of prompt_args till we need it (first prompt).
+        # defer initialization of prompt_args and registration of event handlers till first prompt.
         # too many envvar events happening during initialization.
         if self.prompt_args is None:
-            self._update_prompt_args()
-            global SINGLETON_SHELL
-            SINGLETON_SHELL = self
-            events.on_envvar_new(self._on_envvar_new)
-            events.on_envvar_change(self._on_envvar_change)
-
-        self.prompt_args.update(
-            dict(
-                auto_suggest=auto_suggest,
-                multiline=multiline,
+            self._update_prompt_args(None, None)
+            events.on_envvar_new(
+                lambda name, value, **kw: self._update_prompt_args(name, value)
             )
-        )
+            events.on_envvar_change(
+                lambda name, oldvalue, newvalue, **kw: self._update_prompt_args(
+                    name, newvalue
+                )
+            )
+
+        self.prompt_args.update(dict(auto_suggest=auto_suggest, multiline=multiline,))
 
         line = self.prompter.prompt(**self.prompt_args)
         events.on_post_prompt.fire()
