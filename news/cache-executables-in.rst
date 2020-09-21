@@ -1,6 +1,6 @@
 **Added:**
 
-* Added xontrib-argcomplete to support kislyuk/argcomplete - tab completion for argparse.
+* Use command_cache when finding available commands, to speedup command-not-found suggestions
 
 **Changed:**
 

@@ -1,7 +1,6 @@
 **Added:**
 
-* Xonsh now supports bash-style variable assignments preceding
-  subprocess commands (e.g. ``$FOO = "bar" bash -c r"echo $FOO"``).
+* <news item>
 
 **Changed:**
 
@@ -17,7 +16,7 @@
 
 **Fixed:**
 
-* <news item>
+* Fix crash when xonsh tries to run windows app execution aliases. 
 
 **Security:**
 
