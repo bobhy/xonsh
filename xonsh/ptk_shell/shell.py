@@ -6,8 +6,9 @@
 # recompute argument dict for prompt only when (any?) environment variable changes.
 import os
 import sys
+import types  # MethodType
+import asyncio
 import builtins
-from types import MethodType
 
 from xonsh.events import events
 from xonsh.base_shell import BaseShell
@@ -39,7 +40,7 @@ from prompt_toolkit.styles.pygments import (
     style_from_pygments_cls,
     style_from_pygments_dict,
 )
-
+from prompt_toolkit.patch_stdout import patch_stdout
 
 Token = _TokenType()
 
@@ -98,7 +99,10 @@ class PromptToolkitShell(BaseShell):
         self.prompt_args = (
             None  # initialization too complex, defer till shell is fully initialized.
         )
-        self.history = ThreadedHistory(PromptToolkitHistory())
+        self.ptk_event_loop = (
+            asyncio.get_event_loop()
+        )  # eventually, might be some non-default one
+        self.history = ThreadedHistory(PromptToolkitHistory(), self.ptk_event_loop)
         self.prompter = PromptSession(history=self.history)
         self.pt_completer = PromptToolkitCompleter(self.completer, self.ctx, self)
         self.key_bindings = load_xonsh_bindings()
@@ -162,7 +166,7 @@ class PromptToolkitShell(BaseShell):
             editing_mode = EditingMode.EMACS
 
         if env.get("XONSH_HISTORY_MATCH_ANYWHERE"):
-            self.prompter.default_buffer._history_matches = MethodType(
+            self.prompter.default_buffer._history_matches = types.MethodType(
                 _cust_history_matches, self.prompter.default_buffer
             )
         elif (
@@ -229,7 +233,11 @@ class PromptToolkitShell(BaseShell):
 
         self.prompt_args.update(dict(auto_suggest=auto_suggest, multiline=multiline,))
 
-        line = self.prompter.prompt(**self.prompt_args)
+        with patch_stdout(self.prompter.app):
+            line = self.ptk_event_loop.run_until_complete(
+                self.prompter.prompt_async(**self.prompt_args)
+            )
+
         events.on_post_prompt.fire()
         return line
 
