@@ -8,6 +8,7 @@ from types import MethodType
 
 from xonsh.events import events
 from xonsh.base_shell import BaseShell
+from xonsh.ptk_shell.formatter import PTKPromptFormatter
 from xonsh.shell import transform_command
 from xonsh.tools import print_exception, carriage_return
 from xonsh.platform import HAS_PYGMENTS, ON_WINDOWS, ON_POSIX
@@ -38,10 +39,6 @@ from prompt_toolkit.styles.pygments import (
 )
 
 
-class PtkFormattedText:  # represents PTK `AnyFormattedText` type union
-    pass  # used only in type hinting, since PTK does not publish this API
-
-
 ANSI_OSC_PATTERN = re.compile("\x1b].*?\007")
 Token = _TokenType()
 
@@ -56,7 +53,7 @@ Fired after prompt toolkit has been initialized
 )
 
 
-def tokenize_ansi(tokens) -> PtkFormattedText:
+def tokenize_ansi(tokens):
     """Checks a list of (token, str) tuples for ANSI escape sequences and
     extends the token list with the new formatted entries.
     During processing tokens are converted to ``prompt_toolkit.FormattedText``.
@@ -112,6 +109,7 @@ class PromptToolkitShell(BaseShell):
         self._first_prompt = True
         self.history = ThreadedHistory(PromptToolkitHistory())
         self.prompter = PromptSession(history=self.history)
+        self.prompt_formatter = PTKPromptFormatter(self.prompter)
         self.pt_completer = PromptToolkitCompleter(self.completer, self.ctx, self)
         self.key_bindings = load_xonsh_bindings()
 
@@ -144,7 +142,6 @@ class PromptToolkitShell(BaseShell):
         refresh_interval = env.get("PROMPT_REFRESH_INTERVAL")
         refresh_interval = refresh_interval if refresh_interval > 0 else None
         complete_in_thread = env.get("COMPLETION_IN_THREAD")
-        completions_menu_rows = env.get("COMPLETIONS_MENU_ROWS")
         completions_display = env.get("COMPLETIONS_DISPLAY")
         complete_style = self.completion_displays_to_styles[completions_display]
 
@@ -156,14 +153,16 @@ class PromptToolkitShell(BaseShell):
             self.styler.style_name = env.get("XONSH_COLOR_STYLE")
         completer = None if completions_display == "none" else self.pt_completer
 
+        get_bottom_toolbar_tokens = self.bottom_toolbar_tokens
+
         if env.get("UPDATE_PROMPT_ON_KEYPRESS"):
-            get_prompt_tokens = lambda: self.prompt_tokens("PROMPT")
-            get_rprompt_tokens = lambda: self.prompt_tokens("RIGHT_PROMPT")
-            get_bottom_toolbar_tokens = lambda: self.prompt_tokens("BOTTOM_TOOLBAR")
+            get_prompt_tokens = self.prompt_tokens
+            get_rprompt_tokens = self.rprompt_tokens
         else:
-            get_prompt_tokens = self.prompt_tokens("PROMPT")
-            get_rprompt_tokens = self.prompt_tokens("RIGHT_PROMPT")
-            get_bottom_toolbar_tokens = self.prompt_tokens("BOTTOM_TOOLBAR")
+            get_prompt_tokens = self.prompt_tokens()
+            get_rprompt_tokens = self.rprompt_tokens()
+            if get_bottom_toolbar_tokens:
+                get_bottom_toolbar_tokens = get_bottom_toolbar_tokens()
 
         if env.get("VI_MODE"):
             editing_mode = EditingMode.VI
@@ -191,7 +190,7 @@ class PromptToolkitShell(BaseShell):
             "editing_mode": editing_mode,
             "prompt_continuation": self.continuation_tokens,
             "enable_history_search": enable_history_search,
-            "reserve_space_for_menu": completions_menu_rows,
+            "reserve_space_for_menu": 0,
             "key_bindings": self.key_bindings,
             "complete_style": complete_style,
             "complete_while_typing": complete_while_typing,
@@ -199,7 +198,7 @@ class PromptToolkitShell(BaseShell):
             "refresh_interval": refresh_interval,
             "complete_in_thread": complete_in_thread,
         }
-        if builtins.__xonsh__.env.get("COLOR_INPUT"):
+        if env.get("COLOR_INPUT"):
             if HAS_PYGMENTS:
                 prompt_args["lexer"] = PygmentsLexer(pyghooks.XonshLexer)
                 style = style_from_pygments_cls(pyghooks.xonsh_style_proxy(self.styler))
@@ -216,7 +215,12 @@ class PromptToolkitShell(BaseShell):
                 except (AttributeError, TypeError, ValueError):
                     print_exception()
 
+        if env["ENABLE_ASYNC_PROMPT"]:
+            # once the prompt is done, update it in background as each future is completed
+            prompt_args["pre_run"] = self.prompt_formatter.start_update
+
         line = self.prompter.prompt(**prompt_args)
+
         events.on_post_prompt.fire()
         return line
 
@@ -245,10 +249,6 @@ class PromptToolkitShell(BaseShell):
             print(intro)
         auto_suggest = AutoSuggestFromHistory()
         self.push = self._push
-        if self._first_prompt:
-            carriage_return()
-            self._first_prompt = False
-
         while not builtins.__xonsh__.exit:
             try:
                 line = self.singleline(auto_suggest=auto_suggest)
@@ -265,44 +265,73 @@ class PromptToolkitShell(BaseShell):
                 else:
                     break
 
-    def prompt_tokens(self, attr_name: str = "PROMPT") -> PtkFormattedText:
-        """Converts xonsh formatted strings used as prompts and toolbars to PTK FormattedText.
-        Handles clearing any previous value on subsequent call to PTK (None ambiguity on call to PTK)
-        Emulates 'set title' embedded OSC VT100, hides from PTK (which doesn't handle??).
-        """
-        p = builtins.__xonsh__.env.get(attr_name)
-        if not p or len(p) == 0:  # quick exit if value is not configured
-            return []
+    def _get_prompt_tokens(self, env_name: str, prompt_name: str, **kwargs):
+        env = builtins.__xonsh__.env
+        p = env.get(env_name)
+
+        if not p and "default" in kwargs:
+            return kwargs.pop("default")
 
         try:
-            p = self.prompt_formatter(p)
+            p = self.prompt_formatter(
+                template=p,
+                threaded=env["ENABLE_ASYNC_PROMPT"],
+                prompt_name=prompt_name,
+            )
         except Exception:  # pylint: disable=broad-except
             print_exception()
 
-        # handle OSC tokens
         p, osc_tokens = remove_ansi_osc(p)
-        for osc in osc_tokens:
-            if osc[2:4] == "0;":
-                builtins.__xonsh__.env["TITLE"] = osc[4:-1]
-            else:
-                print(osc, file=sys.__stdout__, flush=True)
-        self.settitle()
 
-        # convert what's left to PTK FormattedText
+        if kwargs.get("handle_osc_tokens"):
+            # handle OSC tokens
+            for osc in osc_tokens:
+                if osc[2:4] == "0;":
+                    env["TITLE"] = osc[4:-1]
+                else:
+                    print(osc, file=sys.__stdout__, flush=True)
+
         toks = partial_color_tokenize(p)
+
         return tokenize_ansi(PygmentsTokens(toks))
 
-    def continuation_tokens(
-        self, width, line_number, is_soft_wrap=False
-    ) -> PtkFormattedText:
+    def prompt_tokens(self):
+        """Returns a list of (token, str) tuples for the current prompt."""
+        if self._first_prompt:
+            carriage_return()
+            self._first_prompt = False
+
+        tokens = self._get_prompt_tokens("PROMPT", "message", handle_osc_tokens=True)
+        self.settitle()
+        return tokens
+
+    def rprompt_tokens(self):
+        """Returns a list of (token, str) tuples for the current right
+        prompt.
+        """
+        return self._get_prompt_tokens("RIGHT_PROMPT", "rprompt", default=[])
+
+    def _bottom_toolbar_tokens(self):
+        """Returns a list of (token, str) tuples for the current bottom
+        toolbar.
+        """
+        return self._get_prompt_tokens("BOTTOM_TOOLBAR", "bottom_toolbar", default=None)
+
+    @property
+    def bottom_toolbar_tokens(self):
+        """Returns self._bottom_toolbar_tokens if it would yield a result"""
+        if builtins.__xonsh__.env.get("BOTTOM_TOOLBAR"):
+            return self._bottom_toolbar_tokens
+
+    def continuation_tokens(self, width, line_number, is_soft_wrap=False):
         """Displays dots in multiline prompt"""
         if is_soft_wrap:
-            return []
+            return ""
         width = width - 1
         dots = builtins.__xonsh__.env.get("MULTILINE_PROMPT")
         dots = dots() if callable(dots) else dots
         if not dots:
-            return []
+            return ""
         basetoks = self.format_color(dots)
         baselen = sum(len(t[1]) for t in basetoks)
         if baselen == 0:
