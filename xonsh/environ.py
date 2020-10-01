@@ -36,6 +36,9 @@ from xonsh.tools import (
     always_false,
     detype,
     ensure_string,
+    is_path,
+    str_to_path,
+    path_to_str,
     is_env_path,
     str_to_env_path,
     env_path_to_str,
@@ -145,10 +148,10 @@ Normal usage is to arm the event handler, then read (not modify) all existing va
 @lazyobject
 def HELP_TEMPLATE():
     return (
-        "{{INTENSE_RED}}{envvar}{{NO_COLOR}}:\n\n"
-        "{{INTENSE_YELLOW}}{docstr}{{NO_COLOR}}\n\n"
-        "default: {{CYAN}}{default}{{NO_COLOR}}\n"
-        "configurable: {{CYAN}}{configurable}{{NO_COLOR}}"
+        "{{INTENSE_RED}}{envvar}{{RESET}}:\n\n"
+        "{{INTENSE_YELLOW}}{docstr}{{RESET}}\n\n"
+        "default: {{CYAN}}{default}{{RESET}}\n"
+        "configurable: {{CYAN}}{configurable}{{RESET}}"
     )
 
 
@@ -325,14 +328,14 @@ class LsColors(cabc.MutableMapping):
         "di": ("BOLD_BLUE",),
         "do": ("BOLD_PURPLE",),
         "ex": ("BOLD_GREEN",),
-        "fi": ("NO_COLOR",),
+        "fi": ("RESET",),
         "ln": ("BOLD_CYAN",),
-        "mh": ("NO_COLOR",),
-        "mi": ("NO_COLOR",),
+        "mh": ("RESET",),
+        "mi": ("RESET",),
         "or": ("BACKGROUND_BLACK", "RED"),
         "ow": ("BLUE", "BACKGROUND_GREEN"),
         "pi": ("BACKGROUND_BLACK", "YELLOW"),
-        "rs": ("NO_COLOR",),
+        "rs": ("RESET",),
         "sg": ("BLACK", "BACKGROUND_YELLOW"),
         "so": ("BOLD_PURPLE",),
         "st": ("WHITE", "BACKGROUND_BLUE"),
@@ -341,7 +344,7 @@ class LsColors(cabc.MutableMapping):
     }
 
     target_value = "target"  # special value to set for ln=target
-    target_color = ("NO_COLOR",)  # repres in color space
+    target_color = ("RESET",)  # repres in color space
 
     def __init__(self, ini_dict: dict = None):
         self._style = self._style_name = None
@@ -400,7 +403,7 @@ class LsColors(cabc.MutableMapping):
                 p.pretty(dict(self))
 
     def is_target(self, key) -> bool:
-        "Return True if key is 'target'"
+        """Return True if key is 'target'"""
         return key in self._targets
 
     def detype(self):
@@ -466,7 +469,7 @@ class LsColors(cabc.MutableMapping):
                     )
                 except Exception as e:
                     print("xonsh:warning:" + str(e), file=sys.stderr)
-                    ini_dict[key] = ("NO_COLOR",)
+                    ini_dict[key] = ("RESET",)
         return cls(ini_dict)
 
     @classmethod
@@ -534,7 +537,8 @@ def ensure_ls_colors_in_env(spec=None, **kwargs):
 ENSURERS = {
     "bool": (is_bool, to_bool, bool_to_str),
     "str": (is_string, ensure_string, ensure_string),
-    "path": (is_env_path, str_to_env_path, env_path_to_str),
+    "path": (is_path, str_to_path, path_to_str),
+    "env_path": (is_env_path, str_to_env_path, env_path_to_str),
     "float": (is_float, float, str),
     "int": (is_int, int, str),
 }
@@ -1672,7 +1676,7 @@ def DEFAULT_VARS():
             "is prepended whenever stderr is displayed. This may be used in "
             "conjunction with ``$XONSH_STDERR_POSTFIX`` to close out the block."
             "For example, to have stderr appear on a red background, the "
-            'prefix & postfix pair would be "{BACKGROUND_RED}" & "{NO_COLOR}".',
+            'prefix & postfix pair would be "{BACKGROUND_RED}" & "{RESET}".',
         ),
         "XONSH_STDERR_POSTFIX": Var(
             is_string,
@@ -1683,7 +1687,7 @@ def DEFAULT_VARS():
             "is appended whenever stderr is displayed. This may be used in "
             "conjunction with ``$XONSH_STDERR_PREFIX`` to start the block."
             "For example, to have stderr appear on a red background, the "
-            'prefix & postfix pair would be "{BACKGROUND_RED}" & "{NO_COLOR}".',
+            'prefix & postfix pair would be "{BACKGROUND_RED}" & "{RESET}".',
         ),
         "XONSH_STORE_STDIN": Var(
             is_bool,
@@ -1980,6 +1984,11 @@ class Env(cabc.MutableMapping):
             val, (cabc.MutableSet, cabc.MutableSequence, cabc.MutableMapping)
         ):
             self._detyped = None
+
+        validator = self.get_validator(key)
+        converter = self.get_converter(key)
+        if not validator(val):
+            val = converter(val)
         return val
 
     def __setitem__(self, key, val):
@@ -2088,7 +2097,7 @@ class Env(cabc.MutableMapping):
         ----------
         name : str
             Environment variable name to register. Typically all caps.
-        type : str, optional,  {'bool', 'str', 'path', 'int', 'float'}
+        type : str, optional,  {'bool', 'str', 'path', 'env_path', 'int', 'float'}
             Variable type. If not one of the available presets, use `validate`,
             `convert`, and `detype` to specify type behavior.
         default : optional
@@ -2116,7 +2125,9 @@ class Env(cabc.MutableMapping):
 
         """
 
-        if (type is not None) and (type in ("bool", "str", "path", "int", "float")):
+        if (type is not None) and (
+            type in ("bool", "str", "path", "env_path", "int", "float")
+        ):
             validate, convert, detype = ENSURERS[type]
 
         if default is not None:

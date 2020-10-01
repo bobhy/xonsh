@@ -77,6 +77,7 @@ class XonshCalledProcessError(XonshError, subprocess.CalledProcessError):
     returncode of the command is nonzero.
 
     Example:
+    -------
         try:
             for line in !(ls):
                 print(line)
@@ -1170,9 +1171,20 @@ def ensure_string(x):
     return str(x)
 
 
+def is_path(x):
+    """This tests if something is a path."""
+    return isinstance(x, pathlib.Path)
+
+
 def is_env_path(x):
     """This tests if something is an environment path, ie a list of strings."""
     return isinstance(x, EnvPath)
+
+
+def str_to_path(x):
+    """Converts a string to a path."""
+    # checking x is needed to avoid uncontrolled converting empty string to Path('.')
+    return pathlib.Path(x) if x else None
 
 
 def str_to_env_path(x):
@@ -1181,6 +1193,12 @@ def str_to_env_path(x):
     """
     # splitting will be done implicitly in EnvPath's __init__
     return EnvPath(x)
+
+
+def path_to_str(x):
+    """Converts a path to a string.
+    """
+    return str(x)
 
 
 def env_path_to_str(x):
@@ -1254,7 +1272,7 @@ _FALSES = LazyObject(
 
 
 def to_bool(x):
-    """"Converts to a boolean in a semantically meaningful way."""
+    """Converts to a boolean in a semantically meaningful way."""
     if isinstance(x, bool):
         return x
     elif isinstance(x, str):
@@ -1264,7 +1282,7 @@ def to_bool(x):
 
 
 def to_bool_or_none(x):
-    """"Converts to a boolean or none in a semantically meaningful way."""
+    """Converts to a boolean or none in a semantically meaningful way."""
     if x is None or isinstance(x, bool):
         return x
     elif isinstance(x, str):

@@ -3,6 +3,7 @@
 from __future__ import unicode_literals, print_function
 import os
 import re
+import pathlib
 from tempfile import TemporaryDirectory
 from xonsh.tools import always_true, DefaultNotGiven
 
@@ -298,7 +299,7 @@ def test_delitem_default():
 
 def test_lscolors_target(xonsh_builtins):
     lsc = LsColors.fromstring("ln=target")
-    assert lsc["ln"] == ("NO_COLOR",)
+    assert lsc["ln"] == ("RESET",)
     assert lsc.is_target("ln")
     assert lsc.detype() == "ln=target"
     assert not (lsc.is_target("mi"))
@@ -307,15 +308,15 @@ def test_lscolors_target(xonsh_builtins):
 @pytest.mark.parametrize(
     "key_in,old_in,new_in,test",
     [
-        ("fi", ("NO_COLOR",), ("BLUE",), "existing key, change value"),
-        ("fi", ("NO_COLOR",), ("NO_COLOR",), "existing key, no change in value"),
-        ("tw", None, ("NO_COLOR",), "create new key"),
+        ("fi", ("RESET",), ("BLUE",), "existing key, change value"),
+        ("fi", ("RESET",), ("RESET",), "existing key, no change in value"),
+        ("tw", None, ("RESET",), "create new key"),
         ("pi", ("BACKGROUND_BLACK", "YELLOW"), None, "delete existing key"),
     ],
 )
 def test_lscolors_events(key_in, old_in, new_in, test, xonsh_builtins):
     lsc = LsColors.fromstring("fi=0:di=01;34:pi=40;33")
-    # corresponding colors: [('NO_COLOR',), ('BOLD_CYAN',), ('BOLD_CYAN',), ('BACKGROUND_BLACK', 'YELLOW')]
+    # corresponding colors: [('RESET',), ('BOLD_CYAN',), ('BOLD_CYAN',), ('BACKGROUND_BLACK', 'YELLOW')]
 
     event_fired = False
 
@@ -421,9 +422,26 @@ def test_register_custom_var_str(val, converted):
     assert env["MY_SPECIAL_VAR"] == converted
 
 
-def test_register_custom_var_path():
+def test_register_var_path():
     env = Env()
-    env.register("MY_SPECIAL_VAR", type="path")
+    env.register("MY_PATH_VAR", type="path")
+
+    path = '/tmp'
+    env["MY_PATH_VAR"] = path
+    assert env["MY_PATH_VAR"] == pathlib.Path(path)
+
+    # Empty string is None to avoid uncontrolled converting empty string to Path('.')
+    path = ''
+    env["MY_PATH_VAR"] = path
+    assert env["MY_PATH_VAR"] == None
+
+    with pytest.raises(TypeError):
+        env["MY_PATH_VAR"] = 42
+
+
+def test_register_custom_var_env_path():
+    env = Env()
+    env.register("MY_SPECIAL_VAR", type="env_path")
 
     paths = ["/home/wakka", "/home/wakka/bin"]
     env["MY_SPECIAL_VAR"] = paths
@@ -438,11 +456,11 @@ def test_register_custom_var_path():
 def test_deregister_custom_var():
     env = Env()
 
-    env.register("MY_SPECIAL_VAR", type="path")
+    env.register("MY_SPECIAL_VAR", type="env_path")
     env.deregister("MY_SPECIAL_VAR")
     assert "MY_SPECIAL_VAR" not in env
 
-    env.register("MY_SPECIAL_VAR", type="path")
+    env.register("MY_SPECIAL_VAR", type="env_path")
     paths = ["/home/wakka", "/home/wakka/bin"]
     env["MY_SPECIAL_VAR"] = paths
     env.deregister("MY_SPECIAL_VAR")
